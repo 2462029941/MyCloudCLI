@@ -26,7 +26,8 @@ import {
 } from '@/shared/image-attachments.js';
 import {
   CLAUDE_PREDEFINED_MODELS,
-  CLAUDE_ULTRACODE_EFFORT
+  CLAUDE_ULTRACODE_EFFORT,
+  resolveClaudeCatalogModel
 } from '@/modules/providers/list/claude/claude-models.provider.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import {
@@ -88,7 +89,12 @@ const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode'])
 const ULTRACODE_SDK_EFFORT = 'xhigh';
 
 function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_PREDEFINED_MODELS) {
-  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
+  // A resumed external session can carry the resolved id (`claude-opus-5-5`)
+  // instead of the alias (`opus`) its effort levels are listed under.
+  const catalogModel = typeof model === 'string' ? resolveClaudeCatalogModel(model) : model;
+  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model)
+    || modelsDefinition?.OPTIONS?.find((option) => option.value === catalogModel)
+    || null;
   const allowedEfforts = selectedModel?.effort?.values
     ?.map((value) => value.value) || [];
   return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)

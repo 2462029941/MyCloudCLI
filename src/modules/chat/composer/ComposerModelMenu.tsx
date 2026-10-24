@@ -6,6 +6,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { ProviderModelOption } from '@/shared/types';
 import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
+import { formatAnsweringModelLabel } from '@/modules/chat/utils/modelLabel';
 import {
   ComposerMenuHeading,
   ComposerMenuItem,
@@ -65,7 +66,9 @@ function ComposerModelMenu({
     () => modelOptions.find((option) => option.value === model) ?? null,
     [model, modelOptions],
   );
-  const modelLabel = selectedModelOption?.label || model;
+  // A session model outside the catalog (an older Claude id) still reads by
+  // its official name instead of the raw id.
+  const modelLabel = selectedModelOption?.label || formatAnsweringModelLabel(model) || model;
 
   const hasEffortSection = resolvedEffortOptions.length > 0;
   const hasModelSection = modelOptions.length > 0 || modelsLoading;

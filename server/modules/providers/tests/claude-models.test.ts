@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { extractClaudeEventModel } from '@/modules/providers/list/claude/claude-models.provider.js';
+import {
+  extractClaudeEventModel,
+  resolveClaudeCatalogModel,
+} from '@/modules/providers/list/claude/claude-models.provider.js';
 
 const SESSION_ID = 'session-1';
 
@@ -84,4 +87,25 @@ test('falls back to the message model when every content hit is a placeholder', 
     ),
     'claude-sonnet-5',
   );
+});
+
+test('maps the official id an alias resolves to back onto the catalog option', () => {
+  assert.equal(resolveClaudeCatalogModel('claude-opus-5-5'), 'opus');
+  assert.equal(resolveClaudeCatalogModel('claude-sonnet-5-5'), 'sonnet');
+  assert.equal(resolveClaudeCatalogModel('claude-haiku-5-5'), 'haiku');
+  assert.equal(resolveClaudeCatalogModel('claude-fable-5-1'), 'fable');
+  assert.equal(resolveClaudeCatalogModel('claude-opus-5-5[1m]'), 'opus[1m]');
+  assert.equal(resolveClaudeCatalogModel('claude-sonnet-5-5-20260901'), 'sonnet');
+});
+
+test('maps an official display name and keeps catalog values as they are', () => {
+  assert.equal(resolveClaudeCatalogModel('Opus 5.5'), 'opus');
+  assert.equal(resolveClaudeCatalogModel('Sonnet 5.5 (1M context)'), 'sonnet[1m]');
+  assert.equal(resolveClaudeCatalogModel('opusplan'), 'opusplan');
+});
+
+test('leaves ids no alias points to unchanged', () => {
+  assert.equal(resolveClaudeCatalogModel('claude-opus-4-1'), 'claude-opus-4-1');
+  assert.equal(resolveClaudeCatalogModel('claude-haiku-5-5[1m]'), 'claude-haiku-5-5[1m]');
+  assert.equal(resolveClaudeCatalogModel('my-custom-model'), 'my-custom-model');
 });
