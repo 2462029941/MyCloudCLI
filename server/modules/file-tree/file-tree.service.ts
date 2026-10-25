@@ -4,6 +4,7 @@ import ignore from 'ignore';
 
 import type {
   FileTreeDirectoryEntry,
+  FileTreeDirectoryPage,
   FileTreeNode,
   FileTreeServiceDependencies,
   FileTreeServices,
@@ -42,6 +43,12 @@ const COMMON_WORKSPACE_DIRECTORY_NAMES = [
 // broad workspace (for example, a user's home directory) cannot exhaust the
 // server heap before the browser has a chance to switch to a narrower project.
 const MAXIMUM_FILE_TREE_ENTRIES = 10_000;
+
+// File Tree's per-directory listing reads at most this many names from one
+// directory before sorting and paging them. Names are cheap to hold; the cap
+// only stops a pathological directory (millions of cache files) from being
+// read in full on every page request.
+const MAXIMUM_DIRECTORY_SCAN_ENTRIES = 100_000;
 
 type FileTreeEntryFilter = (entryPath: string, isDirectory: boolean) => boolean;
 
@@ -157,6 +164,19 @@ function mapFileSystemError(
   throw error;
 }
 
+function includeEveryEntry(): boolean {
+  return true;
+}
+
+function sortFileTreeEntries<T extends { name: string; type: 'file' | 'directory' }>(entries: T[]): T[] {
+  return entries.sort((left, right) => {
+    if (left.type !== right.type) {
+      return left.type === 'directory' ? -1 : 1;
+    }
+    return left.name.localeCompare(right.name);
+  });
+}
+
 function createGitignoreEntryFilter(
   projectRoot: string,
   gitignoreContent: string,
@@ -256,39 +276,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
 
     const items = await Promise.all(visibleEntries.map(async (entry): Promise<FileTreeNode> => {
       const itemPath = path.join(directoryPath, entry.name);
-      const item: FileTreeNode = {
-        name: entry.name,
-        path: itemPath,
-        type: entry.isDirectory() ? 'directory' : 'file',
-        size: 0,
-        modified: null,
-        permissions: '000',
-        permissionsRwx: '---------',
-      };
-
-      try {
-        await acquire();
-        try {
-          const stats = await fileSystem.lstat(itemPath);
-          const ownerPermissions = (stats.mode >> 6) & 7;
-          const groupPermissions = (stats.mode >> 3) & 7;
-          const otherPermissions = stats.mode & 7;
-
-          item.size = stats.size;
-          item.modified = stats.mtime.toISOString();
-          item.permissions = `${ownerPermissions}${groupPermissions}${otherPermissions}`;
-          item.permissionsRwx = permissionBitsToRwx(ownerPermissions)
-            + permissionBitsToRwx(groupPermissions)
-            + permissionBitsToRwx(otherPermissions);
-          if (stats.isSymbolicLink()) {
-            item.isSymlink = true;
-          }
-        } finally {
-          release();
-        }
-      } catch {
-        // Metadata failures should not hide an otherwise readable tree entry.
-      }
+      const item = await describeEntry(itemPath, entry.name, entry.isDirectory() ? 'directory' : 'file');
 
       // Skip recursing into pseudo-filesystems and other system-critical
       // directories (e.g. /proc, /sys) — they're never valid project roots,
@@ -309,12 +297,102 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       return item;
     }));
 
-    return items.sort((left, right) => {
-      if (left.type !== right.type) {
-        return left.type === 'directory' ? -1 : 1;
+    return sortFileTreeEntries(items);
+  }
+
+  /**
+   * Builds one tree node with its size, mtime and permission metadata. A
+   * metadata failure leaves the defaults in place rather than hiding an
+   * otherwise readable entry.
+   */
+  async function describeEntry(
+    itemPath: string,
+    name: string,
+    type: 'file' | 'directory',
+  ): Promise<FileTreeNode> {
+    const item: FileTreeNode = {
+      name,
+      path: itemPath,
+      type,
+      size: 0,
+      modified: null,
+      permissions: '000',
+      permissionsRwx: '---------',
+    };
+
+    try {
+      await acquire();
+      try {
+        const stats = await fileSystem.lstat(itemPath);
+        const ownerPermissions = (stats.mode >> 6) & 7;
+        const groupPermissions = (stats.mode >> 3) & 7;
+        const otherPermissions = stats.mode & 7;
+
+        item.size = stats.size;
+        item.modified = stats.mtime.toISOString();
+        item.permissions = `${ownerPermissions}${groupPermissions}${otherPermissions}`;
+        item.permissionsRwx = permissionBitsToRwx(ownerPermissions)
+          + permissionBitsToRwx(groupPermissions)
+          + permissionBitsToRwx(otherPermissions);
+        if (stats.isSymbolicLink()) {
+          item.isSymlink = true;
+        }
+      } finally {
+        release();
       }
-      return left.name.localeCompare(right.name);
-    });
+    } catch {
+      // Metadata failures should not hide an otherwise readable tree entry.
+    }
+
+    return item;
+  }
+
+  /**
+   * Reads the project's root `.gitignore` into an entry filter, or `undefined`
+   * when there is none so callers fall back to the conventional names.
+   */
+  async function loadGitignoreEntryFilter(projectRoot: string): Promise<FileTreeEntryFilter | undefined> {
+    try {
+      const gitignoreContent = await fileSystem.readTextFile(path.join(projectRoot, '.gitignore'));
+      return createGitignoreEntryFilter(projectRoot, gitignoreContent);
+    } catch (error) {
+      if (readErrorCode(error) !== 'ENOENT') {
+        dependencies.logger.error(`Error reading .gitignore in "${projectRoot}"`, error);
+      }
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolves a directory the tree may list: the project root itself or a
+   * directory under it. The lexical check rejects `..` traversal; the realpath
+   * check rejects a path that leaves the project through a symlinked folder.
+   */
+  async function resolveListableDirectory(projectRoot: string, directoryPath: string | null): Promise<string> {
+    const resolvedProjectRoot = path.resolve(projectRoot);
+    const requestedPath = directoryPath
+      ? (path.isAbsolute(directoryPath) ? path.resolve(directoryPath) : path.resolve(projectRoot, directoryPath))
+      : resolvedProjectRoot;
+    const targetPath = requestedPath === resolvedProjectRoot
+      ? resolvedProjectRoot
+      : resolvePathInsideProject(projectRoot, requestedPath);
+
+    let realTargetPath: string;
+    let realProjectRoot: string;
+    try {
+      [realTargetPath, realProjectRoot] = await Promise.all([
+        fileSystem.realpath(targetPath),
+        fileSystem.realpath(resolvedProjectRoot),
+      ]);
+    } catch {
+      throw createFileTreeError('Directory not found', 404, 'DIRECTORY_NOT_FOUND');
+    }
+
+    if (realTargetPath !== realProjectRoot && !realTargetPath.startsWith(realProjectRoot + path.sep)) {
+      throw createFileTreeError('Path must be under project root', 403, 'PATH_OUTSIDE_PROJECT');
+    }
+
+    return targetPath;
   }
 
   /**
@@ -515,19 +593,78 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError(`Project path not found: ${projectRoot}`, 404, 'PROJECT_PATH_NOT_FOUND');
       }
 
-      let includeEntry: FileTreeEntryFilter | undefined;
-      if (options?.respectGitignore) {
-        try {
-          const gitignoreContent = await fileSystem.readTextFile(path.join(projectRoot, '.gitignore'));
-          includeEntry = createGitignoreEntryFilter(projectRoot, gitignoreContent);
-        } catch (error) {
-          if (readErrorCode(error) !== 'ENOENT') {
-            dependencies.logger.error(`Error reading .gitignore in "${projectRoot}"`, error);
-          }
-        }
-      }
+      const includeEntry = options?.respectGitignore
+        ? await loadGitignoreEntryFilter(projectRoot)
+        : undefined;
 
       return buildFileTree(projectRoot, 10, 0, includeEntry);
+    },
+
+    async listDirectory(projectId, options) {
+      const projectRoot = await resolveProjectRoot(projectId);
+      const directoryPath = await resolveListableDirectory(projectRoot, options.directoryPath);
+
+      try {
+        const stats = await fileSystem.stat(directoryPath);
+        if (!stats.isDirectory()) {
+          throw createFileTreeError('Path is not a directory', 400, 'NOT_A_DIRECTORY');
+        }
+      } catch (error) {
+        if (error instanceof AppError) throw error;
+        throw createFileTreeError('Directory not found', 404, 'DIRECTORY_NOT_FOUND');
+      }
+
+      // "Show all" drops every visibility rule, including the hard exclusions;
+      // the default view hides what the recursive tree has always hidden.
+      const includeEntry: FileTreeEntryFilter = options.showAll
+        ? includeEveryEntry
+        : (await loadGitignoreEntryFilter(projectRoot)) ?? includeEntryByFallbackDirectoryNames;
+
+      const visibleEntries: Array<{ name: string; type: 'file' | 'directory' }> = [];
+      let truncated = false;
+      await acquire();
+      try {
+        for await (const entry of fileSystem.openDirectory(directoryPath)) {
+          const isDirectory = entry.isDirectory();
+          if (!includeEntry(path.join(directoryPath, entry.name), isDirectory)) {
+            continue;
+          }
+          if (visibleEntries.length >= MAXIMUM_DIRECTORY_SCAN_ENTRIES) {
+            truncated = true;
+            break;
+          }
+          visibleEntries.push({ name: entry.name, type: isDirectory ? 'directory' : 'file' });
+        }
+      } catch (error) {
+        mapFileSystemError(error, {
+          EACCES: { message: 'Permission denied', statusCode: 403 },
+          EPERM: { message: 'Permission denied', statusCode: 403 },
+          ENOENT: { message: 'Directory not found', statusCode: 404 },
+          ENOTDIR: { message: 'Path is not a directory', statusCode: 400 },
+        });
+      } finally {
+        release();
+      }
+
+      // Sorting needs every name, but metadata is read for the requested page
+      // only, which is what keeps a huge folder cheap to open.
+      sortFileTreeEntries(visibleEntries);
+      const pageEntries = visibleEntries.slice(options.offset, options.offset + options.limit);
+      const entries = await Promise.all(pageEntries.map((entry) => describeEntry(
+        path.join(directoryPath, entry.name),
+        entry.name,
+        entry.type,
+      )));
+      const nextOffset = options.offset + pageEntries.length;
+
+      return {
+        path: directoryPath,
+        entries,
+        offset: options.offset,
+        nextOffset: nextOffset < visibleEntries.length ? nextOffset : null,
+        totalEntries: visibleEntries.length,
+        truncated,
+      } satisfies FileTreeDirectoryPage;
     },
 
     async createEntry(input) {

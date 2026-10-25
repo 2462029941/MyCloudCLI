@@ -20,6 +20,7 @@ function createFakeServices(overrides: Partial<FileTreeServices> = {}): FileTree
     openFile: unexpectedOperation,
     saveTextFile: unexpectedOperation,
     listProjectFiles: unexpectedOperation,
+    listDirectory: unexpectedOperation,
     createEntry: unexpectedOperation,
     renameEntry: unexpectedOperation,
     deleteEntry: unexpectedOperation,
@@ -93,6 +94,37 @@ test('project files route requests gitignore filtering when explicitly enabled',
   });
 
   assert.deepEqual(inputs, [['project-1', { respectGitignore: true }]]);
+});
+
+test('directory children route parses the page, path and show-all flag', async () => {
+  const inputs: Parameters<FileTreeServices['listDirectory']>[] = [];
+  const services = createFakeServices({
+    listDirectory: async (...input) => {
+      inputs.push(input);
+      return { path: '/project', entries: [], offset: 0, nextOffset: null, totalEntries: 0, truncated: false };
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const rootResponse = await fetch(`${baseUrl}/api/file-tree/projects/project-1/files/children`);
+    assert.equal(rootResponse.status, 200);
+
+    const pageResponse = await fetch(
+      `${baseUrl}/api/file-tree/projects/project-1/files/children?path=%2Fproject%2Fsrc&offset=400&limit=50000&showAll=true`,
+    );
+    assert.equal(pageResponse.status, 200);
+
+    const invalidResponse = await fetch(
+      `${baseUrl}/api/file-tree/projects/project-1/files/children?offset=-3&limit=nope`,
+    );
+    assert.equal(invalidResponse.status, 200);
+  });
+
+  assert.deepEqual(inputs, [
+    ['project-1', { directoryPath: null, offset: 0, limit: 200, showAll: false }],
+    ['project-1', { directoryPath: '/project/src', offset: 400, limit: 1000, showAll: true }],
+    ['project-1', { directoryPath: null, offset: 0, limit: 200, showAll: false }],
+  ]);
 });
 
 test('create route parses the transport payload before invoking the service', async () => {

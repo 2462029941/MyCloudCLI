@@ -2,7 +2,7 @@ import type { DragEvent, ReactNode, RefObject } from 'react';
 import { AlertTriangle, Folder, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { FileTreeNode, FileTreeViewMode } from '@/shared/types';
+import type { FileTreeDirectoryStatus, FileTreeNode, FileTreeViewMode } from '@/shared/types';
 import FileTreeEmptyState from '@/modules/file-tree/FileTreeEmptyState';
 import FileTreeList from '@/modules/file-tree/FileTreeList';
 
@@ -13,6 +13,10 @@ type FileTreeBodyProps = {
   searchQuery: string;
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
+  // Lazy-loading state per folder; omitted while searching.
+  getDirectoryStatus?: (directoryPath: string) => FileTreeDirectoryStatus | null;
+  rootDirectoryKey: string;
+  onLoadMoreEntries?: (directoryPath: string) => void;
   onItemClick: (item: FileTreeNode) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
@@ -46,6 +50,9 @@ export default function FileTreeBody({
   searchQuery,
   viewMode,
   expandedDirs,
+  getDirectoryStatus,
+  rootDirectoryKey,
+  onLoadMoreEntries,
   onItemClick,
   renderFileIcon,
   formatFileSize,
@@ -95,6 +102,9 @@ export default function FileTreeBody({
           items={filteredFiles}
           viewMode={viewMode}
           expandedDirs={expandedDirs}
+          getDirectoryStatus={getDirectoryStatus}
+          rootDirectoryKey={rootDirectoryKey}
+          onLoadMoreEntries={onLoadMoreEntries}
           onItemClick={onItemClick}
           renderFileIcon={renderFileIcon}
           formatFileSize={formatFileSize}

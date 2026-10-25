@@ -3,15 +3,19 @@ import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen, Upload } from 'lucide-react';
 
 import { cn } from '@/shared/utils';
-import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
+import type { FileTreeDirectoryStatus, FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '@/shared/types';
 import { Input } from '@/shared/ui';
 import FileContextMenu from '@/modules/file-tree/FileContextMenu';
+import FileTreeDirectoryStatusRow from '@/modules/file-tree/FileTreeDirectoryStatusRow';
 
 type FileTreeNodeProps = {
   item: FileTreeNodeType;
   level: number;
   viewMode: FileTreeViewMode;
   expandedDirs: Set<string>;
+  // Lazy-loading state per folder; omitted while searching.
+  getDirectoryStatus?: (directoryPath: string) => FileTreeDirectoryStatus | null;
+  onLoadMoreEntries?: (directoryPath: string) => void;
   onItemClick: (item: FileTreeNodeType) => void;
   renderFileIcon: (filename: string) => ReactNode;
   formatFileSize: (bytes?: number) => string;
@@ -78,6 +82,8 @@ export default function FileTreeNode({
   level,
   viewMode,
   expandedDirs,
+  getDirectoryStatus,
+  onLoadMoreEntries,
   onItemClick,
   renderFileIcon,
   formatFileSize,
@@ -104,6 +110,8 @@ export default function FileTreeNode({
   const isDirectory = item.type === 'directory';
   const isOpen = isDirectory && expandedDirs.has(item.path);
   const hasChildren = Boolean(isDirectory && item.children && item.children.length > 0);
+  // Only read for an open folder: closed folders have nothing to load yet.
+  const directoryStatus = isOpen ? getDirectoryStatus?.(item.path) ?? null : null;
   const isRenaming = renamingItem?.path === item.path;
   const dragTargetPath = isDirectory ? item.path : getParentDirectoryPath(item.path);
   const isDropTarget = isDirectory && dropTarget === item.path;
@@ -243,7 +251,7 @@ export default function FileTreeNode({
         rowContent
       )}
 
-      {isDirectory && isOpen && hasChildren && (
+      {isDirectory && isOpen && (hasChildren || directoryStatus) && (
         <div className="relative">
           <span
             className="absolute bottom-0 top-0 border-l border-border/40"
@@ -257,6 +265,8 @@ export default function FileTreeNode({
               level={level + 1}
               viewMode={viewMode}
               expandedDirs={expandedDirs}
+              getDirectoryStatus={getDirectoryStatus}
+              onLoadMoreEntries={onLoadMoreEntries}
               onItemClick={onItemClick}
               renderFileIcon={renderFileIcon}
               formatFileSize={formatFileSize}
@@ -280,6 +290,14 @@ export default function FileTreeNode({
               operationLoading={operationLoading}
             />
           ))}
+          {directoryStatus && (
+            <FileTreeDirectoryStatusRow
+              status={directoryStatus}
+              level={level + 1}
+              isEmpty={!hasChildren}
+              onLoadMore={onLoadMoreEntries ? () => onLoadMoreEntries(item.path) : undefined}
+            />
+          )}
         </div>
       )}
     </div>

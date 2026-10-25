@@ -1314,6 +1314,25 @@ export type FileTreeNode = {
 };
 
 /**
+ * One page of a single directory's direct children, as the File Tree lists a
+ * project folder by folder instead of walking the whole project.
+ *
+ * `entries` carry no `children`; the browser requests a folder's page when it
+ * is expanded. `nextOffset` is the offset of the following page, or `null`
+ * once the directory is exhausted. `truncated` means the directory held more
+ * visible entries than the server scans per request, so `totalEntries` is a
+ * lower bound.
+ */
+export type FileTreeDirectoryPage = {
+  path: string;
+  entries: FileTreeNode[];
+  offset: number;
+  nextOffset: number | null;
+  totalEntries: number;
+  truncated: boolean;
+};
+
+/**
  * Minimal directory-entry shape required during File Tree traversal.
  *
  * Production adapts Node `Dirent` objects to this structural contract. Tests
@@ -1456,6 +1475,15 @@ export type FileTreeServices = {
     projectId: string,
     options?: { respectGitignore: boolean },
   ): Promise<FileTreeNode[]>;
+  /**
+   * Lists one page of a project directory's direct children. `directoryPath`
+   * `null` means the project root; `showAll` includes hidden, gitignored and
+   * dependency entries the default view leaves out.
+   */
+  listDirectory(
+    projectId: string,
+    options: { directoryPath: string | null; offset: number; limit: number; showAll: boolean },
+  ): Promise<FileTreeDirectoryPage>;
   createEntry(input: {
     projectId: string;
     parentPath: string;

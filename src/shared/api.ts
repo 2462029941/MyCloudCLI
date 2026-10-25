@@ -313,6 +313,12 @@ export const api = {
     put(`/api/file-tree/projects/${projectId}/file`, { filePath, content }),
   getFiles: (projectId: string, options: ApiRequestOptions = {}) =>
     get(`/api/file-tree/projects/${projectId}/files${query({ respectGitignore: true })}`, options),
+  // One page of a folder's direct children; `path` null is the project root.
+  getDirectoryEntries: (
+    projectId: string,
+    params: { path: string | null; offset: number; limit: number; showAll: boolean },
+    options: ApiRequestOptions = {},
+  ) => get(`/api/file-tree/projects/${projectId}/files/children${query(params)}`, options),
 
   // File operations
   createFile: (

@@ -14,18 +14,30 @@ import type { Project } from '@/shared/types';
 
 const ROOT = '/home/odoo/workspace/personal';
 
-const tree = [
-  {
-    type: 'directory',
-    name: 'decisions',
-    path: `${ROOT}/decisions`,
-    children: [{ type: 'file', name: '0001-first.md', path: `${ROOT}/decisions/0001-first.md` }],
-  },
-];
+// The tree loads one folder per request, keyed by the folder's absolute path
+// (`null` for the project root), the way the children endpoint serves it.
+const directories: Record<string, Array<{ type: string; name: string; path: string }>> = {
+  [ROOT]: [{ type: 'directory', name: 'decisions', path: `${ROOT}/decisions` }],
+  [`${ROOT}/decisions`]: [{ type: 'file', name: '0001-first.md', path: `${ROOT}/decisions/0001-first.md` }],
+};
 
 vi.mock('@/shared/api', () => ({
   api: {
-    getFiles: async () => ({ ok: true, json: async () => tree }),
+    getDirectoryEntries: async (_projectId: string, params: { path: string | null }) => {
+      const directoryPath = params.path ?? ROOT;
+      const entries = directories[directoryPath] ?? [];
+      return {
+        ok: true,
+        json: async () => ({
+          path: directoryPath,
+          entries,
+          offset: 0,
+          nextOffset: null,
+          totalEntries: entries.length,
+          truncated: false,
+        }),
+      };
+    },
   },
 }));
 

@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { ChangeEvent } from 'react';
-import { ChevronDown, Eye, FileText, FolderPlus, List, Loader2, RefreshCw, Search, TableProperties, Upload, X } from 'lucide-react';
+import { ChevronDown, Eye, FileText, FolderPlus, FolderSearch, List, Loader2, RefreshCw, Search, TableProperties, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '@/shared/ui';
@@ -19,6 +19,9 @@ type FileTreeHeaderProps = {
   onUploadFiles?: (files: FileList) => void;
   onRefresh?: () => void;
   onCollapseAll?: () => void;
+  // Whether hidden, gitignored and dependency entries are listed too
+  showAllFiles?: boolean;
+  onShowAllFilesChange?: (showAllFiles: boolean) => void;
   // Loading state
   loading?: boolean;
   operationLoading?: boolean;
@@ -37,6 +40,8 @@ export default function FileTreeHeader({
   onUploadFiles,
   onRefresh,
   onCollapseAll,
+  showAllFiles,
+  onShowAllFilesChange,
   loading,
   operationLoading,
   isUploading,
@@ -153,6 +158,21 @@ export default function FileTreeHeader({
               aria-label={t('fileTree.collapseAll', 'Collapse All')}
             >
               <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {onShowAllFilesChange && (
+            <Button
+              variant={showAllFiles ? 'default' : 'ghost'}
+              size="sm"
+              className="h-7 w-7 p-0"
+              onClick={() => onShowAllFilesChange(!showAllFiles)}
+              title={showAllFiles
+                ? t('fileTree.showAllFilesOn', 'Showing all files, including ignored and dependency folders (click to hide them)')
+                : t('fileTree.showAllFilesOff', 'Show all files, including ignored and dependency folders')}
+              aria-label={t('fileTree.showAllFiles', 'Show all files')}
+              aria-pressed={Boolean(showAllFiles)}
+            >
+              <FolderSearch className="h-3.5 w-3.5" />
             </Button>
           )}
           {/* Divider */}

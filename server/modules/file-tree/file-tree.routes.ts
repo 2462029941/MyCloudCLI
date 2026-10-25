@@ -37,6 +37,21 @@ function readOptionalString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
 }
 
+// File Tree's per-directory listing serves pages of this size unless the
+// client asks for another, and never more than the maximum in one response.
+const DEFAULT_DIRECTORY_PAGE_SIZE = 200;
+const MAXIMUM_DIRECTORY_PAGE_SIZE = 1_000;
+
+function readNonNegativeInteger(value: unknown, fallback: number): number {
+  const parsedValue = typeof value === 'string' ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(parsedValue) && parsedValue >= 0 ? parsedValue : fallback;
+}
+
+function readDirectoryPageSize(value: unknown): number {
+  const pageSize = readNonNegativeInteger(value, DEFAULT_DIRECTORY_PAGE_SIZE);
+  return Math.min(Math.max(pageSize, 1), MAXIMUM_DIRECTORY_PAGE_SIZE);
+}
+
 function readProjectId(request: Request): string {
   return readRequiredString(request.params.projectId, 'projectId');
 }
@@ -164,6 +179,16 @@ export function createFileTreeRouter(
   router.get('/projects/:projectId/files', createRouteHandler(async (request, response) => {
     response.json(await services.listProjectFiles(readProjectId(request), {
       respectGitignore: request.query.respectGitignore === 'true',
+    }));
+  }, logger));
+
+  router.get('/projects/:projectId/files/children', createRouteHandler(async (request, response) => {
+    const directoryPath = readOptionalString(request.query.path);
+    response.json(await services.listDirectory(readProjectId(request), {
+      directoryPath: directoryPath?.trim() ? directoryPath : null,
+      offset: readNonNegativeInteger(request.query.offset, 0),
+      limit: readDirectoryPageSize(request.query.limit),
+      showAll: request.query.showAll === 'true',
     }));
   }, logger));
 

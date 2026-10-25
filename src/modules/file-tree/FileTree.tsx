@@ -6,7 +6,7 @@ import { AlertTriangle, Check, X, Loader2, Folder, Upload } from 'lucide-react';
 import { cn } from '@/shared/utils';
 import { ICON_SIZE_CLASS, getFileIconData } from '@/modules/file-tree/utils/fileIcons';
 import { useExpandedDirectories } from '@/modules/file-tree/hooks/useExpandedDirectories';
-import { useFileTreeData } from '@/modules/file-tree/hooks/useFileTreeData';
+import { ROOT_DIRECTORY_KEY, useFileTreeData } from '@/modules/file-tree/hooks/useFileTreeData';
 import { useFileTreeOperations } from '@/modules/file-tree/hooks/useFileTreeOperations';
 import { useFileTreeSearch } from '@/modules/file-tree/hooks/useFileTreeSearch';
 import { useFileTreeViewMode } from '@/modules/file-tree/hooks/useFileTreeViewMode';
@@ -52,21 +52,61 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
     }
   }, [toast]);
 
-  const { files, loading, error, refreshFiles } = useFileTreeData(selectedProject);
+  const {
+    files,
+    loading,
+    error,
+    refreshFiles,
+    refreshKey,
+    loadDirectory,
+    loadMoreEntries,
+    getDirectoryStatus,
+    showAllFiles,
+    setShowAllFiles,
+  } = useFileTreeData(selectedProject);
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
-  const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
+  const { searchQuery, setSearchQuery, filteredFiles, searchScope } = useFileTreeSearch({
+    projectId: selectedProject?.projectId ?? null,
     files,
+    refreshToken: refreshKey,
     expandDirectories,
   });
+  const isSearching = Boolean(searchQuery.trim());
+
+  // Folders load when they are opened. Only folders actually on screen are
+  // fetched (an expanded folder inside a collapsed or unloaded one waits), so
+  // expansions left over from a search do not fan out into one request each.
+  // Search results come from their own project-wide listing instead.
+  useEffect(() => {
+    if (isSearching) {
+      return;
+    }
+    const pendingDirectories: string[] = [];
+    const visit = (nodes: FileTreeNode[]) => {
+      nodes.forEach((node) => {
+        if (node.type !== 'directory' || !expandedDirs.has(node.path)) {
+          return;
+        }
+        if (node.children) {
+          visit(node.children);
+        } else {
+          pendingDirectories.push(node.path);
+        }
+      });
+    };
+    visit(files);
+    pendingDirectories.forEach(loadDirectory);
+  }, [expandedDirs, files, isSearching, loadDirectory]);
 
   // The reveal request already served, so a later tree refresh does not fold
   // the folders open again over a collapse the user has since made.
   const revealedRef = useRef<DirectoryRevealRequest | null>(null);
 
   // Expand every ancestor between the project root and the requested folder.
-  // A request that arrives before the tree finds nothing to expand and is
-  // retried when `files` lands.
+  // Folders load one level at a time, so this re-runs as each level lands and
+  // goes one folder deeper; the request is served once the deepest folder it
+  // reached has loaded (it is the target, or the next one does not exist).
   useEffect(() => {
     const projectRoot = selectedProject?.path || selectedProject?.fullPath;
     if (!revealDirectory || !projectRoot || revealedRef.current === revealDirectory) {
@@ -76,9 +116,12 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
     if (paths.length === 0) {
       return;
     }
-    revealedRef.current = revealDirectory;
+    const deepestStatus = getDirectoryStatus(paths[paths.length - 1]);
+    if (deepestStatus?.loaded || deepestStatus?.error) {
+      revealedRef.current = revealDirectory;
+    }
     expandDirectories(paths);
-  }, [revealDirectory, selectedProject?.path, selectedProject?.fullPath, expandDirectories, files]);
+  }, [revealDirectory, selectedProject?.path, selectedProject?.fullPath, expandDirectories, files, getDirectoryStatus]);
 
   // File operations
   const operations = useFileTreeOperations({
@@ -219,6 +262,8 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
         onNewFolder={() => operations.handleStartCreate('', 'directory')}
         onRefresh={refreshFiles}
         onCollapseAll={collapseAll}
+        showAllFiles={showAllFiles}
+        onShowAllFilesChange={setShowAllFiles}
         loading={loading}
         operationLoading={operationLoading}
         isUploading={upload.uploadProgress?.status === 'uploading'}
@@ -226,6 +271,15 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
       />
 
       <FileTreeUploadProgress upload={upload.uploadProgress} />
+
+      {isSearching && searchScope === 'loaded' && (
+        <p className="border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+          {t(
+            'fileTree.searchLoadedOnly',
+            'This project is too large to search in full; only folders opened so far are searched.',
+          )}
+        </p>
+      )}
 
       {viewMode === 'detailed' && filteredFiles.length > 0 && <FileTreeDetailedColumns />}
 
@@ -269,6 +323,11 @@ export default function FileTree({ selectedProject, onFileOpen, revealDirectory 
           searchQuery={searchQuery}
           viewMode={viewMode}
           expandedDirs={expandedDirs}
+          // Paging rows belong to the browsed tree; search results are a
+          // separate, already complete listing.
+          getDirectoryStatus={isSearching ? undefined : getDirectoryStatus}
+          rootDirectoryKey={ROOT_DIRECTORY_KEY}
+          onLoadMoreEntries={loadMoreEntries}
           onItemClick={handleItemClick}
           renderFileIcon={renderFileIcon}
           formatFileSize={formatFileSize}

@@ -965,6 +965,14 @@ export type FileTreeNode = {
   [key: string]: unknown;
 };
 
+/** Loading state of one folder in the lazily loaded file tree, read by its rows to show a loading, error or "load more" line. `remainingEntries` counts the folder's entries not fetched yet; it is 0 once every page is in. */
+export type FileTreeDirectoryStatus = {
+  loaded: boolean;
+  loading: boolean;
+  error: string | null;
+  remainingEntries: number;
+};
+
 /** The image the file tree asked to preview, carrying the path plus the DB `projectId` the image viewer needs to build its raw content URL. */
 export type FileTreeImageSelection = {
   name: string;

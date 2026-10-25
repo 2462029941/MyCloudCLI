@@ -331,6 +331,186 @@ test('listProjectFiles shares the entry limit across nested directories', async 
   );
 });
 
+function createListingFileSystem(
+  projectRoot: string,
+  directories: Record<string, FileTreeDirectoryEntry[]>,
+  overrides: Partial<FileTreeFileSystem> = {},
+): FileTreeFileSystem {
+  return createFakeFileSystem({
+    realpath: async (candidatePath) => candidatePath,
+    stat: async (candidatePath) => createStats(candidatePath in directories, 0o755),
+    lstat: async (candidatePath) => createStats(candidatePath in directories, 0o644),
+    readTextFile: async () => {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+    },
+    openDirectory: createDirectoryReader((directoryPath) => directories[directoryPath] ?? []),
+    ...overrides,
+  });
+}
+
+test('listDirectory pages a large folder instead of refusing it', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const fileSystem = createListingFileSystem(projectRoot, {
+    [projectRoot]: [
+      ...Array.from({ length: 25_000 }, (_, index) => createDirectoryEntry(
+        `file-${String(index).padStart(5, '0')}.txt`,
+        false,
+      )),
+      createDirectoryEntry('zeta', true),
+    ],
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  const firstPage = await service.listDirectory('project-1', {
+    directoryPath: null,
+    offset: 0,
+    limit: 200,
+    showAll: false,
+  });
+  assert.equal(firstPage.path, projectRoot);
+  assert.equal(firstPage.totalEntries, 25_001);
+  assert.equal(firstPage.entries.length, 200);
+  // Directories sort first even when they would come last by name.
+  assert.equal(firstPage.entries[0]?.name, 'zeta');
+  assert.equal(firstPage.entries[0]?.children, undefined);
+  assert.equal(firstPage.nextOffset, 200);
+
+  const lastPage = await service.listDirectory('project-1', {
+    directoryPath: null,
+    offset: 24_900,
+    limit: 200,
+    showAll: false,
+  });
+  assert.equal(lastPage.entries.length, 101);
+  assert.equal(lastPage.entries.at(-1)?.name, 'file-24999.txt');
+  assert.equal(lastPage.nextOffset, null);
+});
+
+test('listDirectory reads only the requested folder', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const sourceDirectory = path.join(projectRoot, 'src');
+  const readDirectories: string[] = [];
+  const directories: Record<string, FileTreeDirectoryEntry[]> = {
+    [projectRoot]: [createDirectoryEntry('src', true)],
+    [sourceDirectory]: [createDirectoryEntry('index.ts', false)],
+  };
+  const fileSystem = createListingFileSystem(projectRoot, directories, {
+    openDirectory: createDirectoryReader((directoryPath) => {
+      readDirectories.push(directoryPath);
+      return directories[directoryPath] ?? [];
+    }),
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  const page = await service.listDirectory('project-1', {
+    directoryPath: sourceDirectory,
+    offset: 0,
+    limit: 200,
+    showAll: false,
+  });
+
+  assert.deepEqual(page.entries.map((entry) => entry.name), ['index.ts']);
+  assert.deepEqual(readDirectories, [sourceDirectory]);
+});
+
+test('listDirectory hides ignored entries unless every file is requested', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const fileSystem = createListingFileSystem(projectRoot, {
+    [projectRoot]: [
+      createDirectoryEntry('.git', true),
+      createDirectoryEntry('node_modules', true),
+      createDirectoryEntry('cache', true),
+      createDirectoryEntry('.env', false),
+      createDirectoryEntry('debug.log', false),
+      createDirectoryEntry('README.md', false),
+    ],
+  }, {
+    readTextFile: async () => ['*.log', 'cache/'].join('\n'),
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  const defaultPage = await service.listDirectory('project-1', {
+    directoryPath: null,
+    offset: 0,
+    limit: 200,
+    showAll: false,
+  });
+  assert.deepEqual(defaultPage.entries.map((entry) => entry.name), ['.env', 'README.md']);
+
+  const fullPage = await service.listDirectory('project-1', {
+    directoryPath: null,
+    offset: 0,
+    limit: 200,
+    showAll: true,
+  });
+  assert.deepEqual(
+    fullPage.entries.map((entry) => entry.name),
+    ['.git', 'cache', 'node_modules', '.env', 'debug.log', 'README.md'],
+  );
+});
+
+test('listDirectory refuses folders outside the project, including through a symlink', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const linkedDirectory = path.join(projectRoot, 'linked');
+  const fileSystem = createListingFileSystem(projectRoot, {
+    [projectRoot]: [],
+    [linkedDirectory]: [createDirectoryEntry('secret.txt', false)],
+  }, {
+    realpath: async (candidatePath) => candidatePath === linkedDirectory ? '/etc' : candidatePath,
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+  const isOutsideProject = (error: unknown) => error instanceof AppError
+    && error.code === 'PATH_OUTSIDE_PROJECT'
+    && error.statusCode === 403;
+
+  await assert.rejects(
+    service.listDirectory('project-1', {
+      directoryPath: path.join(projectRoot, '..'),
+      offset: 0,
+      limit: 200,
+      showAll: true,
+    }),
+    isOutsideProject,
+  );
+  await assert.rejects(
+    service.listDirectory('project-1', {
+      directoryPath: linkedDirectory,
+      offset: 0,
+      limit: 200,
+      showAll: true,
+    }),
+    isOutsideProject,
+  );
+});
+
+test('listDirectory reports an unreadable folder instead of an empty one', async () => {
+  const projectRoot = path.resolve('file-tree-test-project');
+  const lockedDirectory = path.join(projectRoot, 'locked');
+  const fileSystem = createListingFileSystem(projectRoot, {
+    [projectRoot]: [],
+    [lockedDirectory]: [],
+  }, {
+    openDirectory: () => ({
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        },
+      }),
+    }),
+  });
+  const service = createFileTreeService(createDependencies(fileSystem, projectRoot));
+
+  await assert.rejects(
+    service.listDirectory('project-1', {
+      directoryPath: lockedDirectory,
+      offset: 0,
+      limit: 200,
+      showAll: false,
+    }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 403,
+  );
+});
+
 test('readTextFile rejects traversal before invoking the filesystem adapter', async () => {
   const projectRoot = path.resolve('file-tree-test-project');
   const readPaths: string[] = [];
